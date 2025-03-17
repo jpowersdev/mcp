@@ -5,12 +5,13 @@
 
 import { FileSystem } from "@effect/platform"
 import { NodeFileSystem } from "@effect/platform-node"
-import type { PlatformError } from "@effect/platform/Error"
 import { Server } from "@modelcontextprotocol/sdk/server/index.js"
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js"
-import { Boolean, Config, Effect, Match, Runtime } from "effect"
+import type { Array } from "effect"
+import { Boolean, Cause, Config, Effect, Inspectable, Match, pipe, Runtime, Schema } from "effect"
 import * as path from "path"
+import { RpcSuccess, ServerError, TextContent, ToolError } from "./Mcp.js"
 
 // If MEMORY_FILE_PATH is just a filename, put it in the same directory as the script
 const MEMORY_FILE_PATH = Config.string("MEMORY_FILE_PATH").pipe(
@@ -27,8 +28,14 @@ const MEMORY_FILE_PATH = Config.string("MEMORY_FILE_PATH").pipe(
 interface Entity {
   name: string
   entityType: string
-  observations: Array<string>
+  observations: ReadonlyArray<string>
 }
+
+const Entity = Schema.Struct({
+  name: Schema.String,
+  entityType: Schema.String,
+  observations: Schema.Array(Schema.String)
+})
 
 interface Relation {
   from: string
@@ -36,10 +43,23 @@ interface Relation {
   relationType: string
 }
 
+const Relation = Schema.Struct({
+  from: Schema.String,
+  to: Schema.String,
+  relationType: Schema.String
+})
+
 interface KnowledgeGraph {
-  entities: Array<Entity>
-  relations: Array<Relation>
+  entities: ReadonlyArray<Entity>
+  relations: ReadonlyArray<Relation>
 }
+
+const KnowledgeGraph = Schema.Struct({
+  entities: Schema.Array(Entity),
+  relations: Schema.Array(Relation)
+})
+
+const emptyGraph = KnowledgeGraph.make({ entities: [], relations: [] })
 
 // The KnowledgeGraphManager class contains all operations to interact with the knowledge graph
 class KnowledgeGraphManager extends Effect.Service<KnowledgeGraphManager>()("KnowledgeGraphManager", {
@@ -48,32 +68,12 @@ class KnowledgeGraphManager extends Effect.Service<KnowledgeGraphManager>()("Kno
     const FS = yield* FileSystem.FileSystem
     const memoryFilePath = yield* MEMORY_FILE_PATH
 
-    if (!(yield* FS.exists(memoryFilePath))) {
-      const parts = memoryFilePath.split("/")
-      const dir = parts.slice(0, -1).join("/")
-      if (dir !== "") {
-        yield* FS.makeDirectory(dir, { recursive: true })
-      }
-      yield* FS.writeFileString(memoryFilePath, "{}")
-    }
+    const schema = Schema.parseJson(KnowledgeGraph)
+    const encode = Schema.encode(schema)
+    const decode = Schema.decode(schema)
 
-    const loadGraph = Effect.gen(function*() {
-      try {
-        const data = yield* FS.readFileString(memoryFilePath)
-        const lines = data.split("\n").filter((line) => line.trim() !== "")
-        return lines.reduce((graph: KnowledgeGraph, line) => {
-          const item = JSON.parse(line)
-          if (item.type === "entity") graph.entities.push(item as Entity)
-          if (item.type === "relation") graph.relations.push(item as Relation)
-          return graph
-        }, { entities: [], relations: [] })
-      } catch (error) {
-        if (error instanceof Error && "code" in error && (error as any).code === "ENOENT") {
-          return { entities: [], relations: [] }
-        }
-        throw error
-      }
-    }).pipe(
+    const loadGraph = FS.readFileString(memoryFilePath).pipe(
+      Effect.flatMap(decode),
       Effect.withSpan("loadGraph", {
         attributes: {
           memoryFilePath
@@ -82,13 +82,8 @@ class KnowledgeGraphManager extends Effect.Service<KnowledgeGraphManager>()("Kno
     )
 
     const saveGraph = (graph: KnowledgeGraph) =>
-      Effect.gen(function*() {
-        const lines = [
-          ...graph.entities.map((e) => JSON.stringify({ type: "entity", ...e })),
-          ...graph.relations.map((r) => JSON.stringify({ type: "relation", ...r }))
-        ]
-        yield* FS.writeFileString(memoryFilePath, lines.join("\n"))
-      }).pipe(
+      encode(graph).pipe(
+        Effect.flatMap((data) => FS.writeFileString(memoryFilePath, data)),
         Effect.withSpan("saveGraph", {
           attributes: {
             memoryFilePath
@@ -102,8 +97,10 @@ class KnowledgeGraphManager extends Effect.Service<KnowledgeGraphManager>()("Kno
         const newEntities = entities.filter((e) =>
           !graph.entities.some((existingEntity: Entity) => existingEntity.name === e.name)
         )
-        graph.entities = [...graph.entities, ...newEntities]
-        yield* saveGraph(graph)
+        yield* saveGraph({
+          ...graph,
+          entities: [...graph.entities, ...newEntities]
+        })
         return newEntities
       }).pipe(
         Effect.withSpan("createEntities", {
@@ -123,8 +120,10 @@ class KnowledgeGraphManager extends Effect.Service<KnowledgeGraphManager>()("Kno
             existingRelation.relationType === r.relationType
           )
         )
-        graph.relations = [...graph.relations, ...newRelations]
-        yield* saveGraph(graph)
+        yield* saveGraph({
+          ...graph,
+          relations: [...graph.relations, ...newRelations]
+        })
         return newRelations
       }).pipe(
         Effect.withSpan("createRelations", {
@@ -139,13 +138,14 @@ class KnowledgeGraphManager extends Effect.Service<KnowledgeGraphManager>()("Kno
     ) =>
       Effect.gen(function*() {
         const graph = yield* loadGraph
+
         const results = observations.map((o) => {
           const entity = graph.entities.find((e: Entity) => e.name === o.entityName)
           if (!entity) {
             throw new Error(`Entity with name ${o.entityName} not found`)
           }
           const newObservations = o.contents.filter((content) => !entity.observations.includes(content))
-          entity.observations = [...entity.observations, ...newObservations]
+          Object.assign(entity, { observations: [...entity.observations, ...newObservations] })
           return { entityName: o.entityName, addedObservations: newObservations }
         })
         yield* saveGraph(graph)
@@ -161,11 +161,12 @@ class KnowledgeGraphManager extends Effect.Service<KnowledgeGraphManager>()("Kno
     const deleteEntities = (entityNames: Array<string>) =>
       Effect.gen(function*() {
         const graph = yield* loadGraph
-        graph.entities = graph.entities.filter((e: Entity) => !entityNames.includes(e.name))
-        graph.relations = graph.relations.filter((r: Relation) =>
-          !entityNames.includes(r.from) && !entityNames.includes(r.to)
-        )
-        yield* saveGraph(graph)
+        yield* saveGraph({
+          entities: graph.entities.filter((e: Entity) => !entityNames.includes(e.name)),
+          relations: graph.relations.filter((r: Relation) =>
+            !entityNames.includes(r.from) && !entityNames.includes(r.to)
+          )
+        })
       }).pipe(
         Effect.withSpan("deleteEntities", {
           attributes: {
@@ -182,7 +183,9 @@ class KnowledgeGraphManager extends Effect.Service<KnowledgeGraphManager>()("Kno
         deletions.forEach((d) => {
           const entity = graph.entities.find((e: Entity) => e.name === d.entityName)
           if (entity) {
-            entity.observations = entity.observations.filter((o: string) => !d.observations.includes(o))
+            Object.assign(entity, {
+              observations: entity.observations.filter((o: string) => !d.observations.includes(o))
+            })
           }
         })
         yield* saveGraph(graph)
@@ -197,14 +200,16 @@ class KnowledgeGraphManager extends Effect.Service<KnowledgeGraphManager>()("Kno
     const deleteRelations = (relations: Array<Relation>) =>
       Effect.gen(function*() {
         const graph = yield* loadGraph
-        graph.relations = graph.relations.filter((r: Relation) =>
-          !relations.some((delRelation) =>
-            r.from === delRelation.from &&
-            r.to === delRelation.to &&
-            r.relationType === delRelation.relationType
+        yield* saveGraph({
+          ...graph,
+          relations: graph.relations.filter((r: Relation) =>
+            !relations.some((delRelation) =>
+              r.from === delRelation.from &&
+              r.to === delRelation.to &&
+              r.relationType === delRelation.relationType
+            )
           )
-        )
-        yield* saveGraph(graph)
+        })
       }).pipe(
         Effect.withSpan("deleteRelations", {
           attributes: {
@@ -272,6 +277,15 @@ class KnowledgeGraphManager extends Effect.Service<KnowledgeGraphManager>()("Kno
         })
       )
 
+    if (!(yield* FS.exists(memoryFilePath))) {
+      const parts = memoryFilePath.split("/")
+      const dir = parts.slice(0, -1).join("/")
+      if (dir !== "") {
+        yield* FS.makeDirectory(dir, { recursive: true })
+      }
+      yield* saveGraph(emptyGraph)
+    }
+
     return {
       loadGraph,
       saveGraph,
@@ -294,7 +308,7 @@ export class MemoryServer extends Effect.Service<MemoryServer>()("MemoryServer",
   accessors: true,
   dependencies: [KnowledgeGraphManager.Default],
   effect: Effect.gen(function*() {
-    const knowledgeGraphManager = yield* KnowledgeGraphManager
+    const manager = yield* KnowledgeGraphManager
 
     // The server instance and tools exposed to Claude
     const server = new Server({
@@ -487,84 +501,114 @@ export class MemoryServer extends Effect.Service<MemoryServer>()("MemoryServer",
       }
     })
 
-    type ContentResponse = {
-      content: Array<{
-        type: "text"
-        text: string
-      }>
-    }
-
-    const encode = (text: unknown): ContentResponse => ({
-      content: [{
-        type: "text",
-        text: JSON.stringify(text, null, 2)
-      }]
-    })
-
     const runPromise = Runtime.runPromise(yield* Effect.runtime())
 
-    server.setRequestHandler(CallToolRequestSchema, (request) =>
-      runPromise(Effect.gen(function*() {
-        if (!request.params.arguments) {
-          return yield* Effect.fail(
-            new Error(`No arguments provided for tool: ${request.params.name}`)
-          )
-        }
+    server.setRequestHandler(CallToolRequestSchema, (request, { signal }) =>
+      pipe(
+        Effect.gen(function*() {
+          if (!request.params.arguments) {
+            return yield* Effect.fail(
+              new Error(`No arguments provided for tool: ${request.params.name}`)
+            )
+          }
 
-        return yield* Match.value(request.params).pipe(
-          Match.withReturnType<Effect.Effect<ContentResponse, PlatformError, never>>(),
-          Match.discriminatorsExhaustive("name")({
-            create_entities: (params) =>
-              knowledgeGraphManager.createEntities(params.arguments?.entities as any).pipe(
-                Effect.map(encode)
-              ),
-            create_relations: (params) =>
-              knowledgeGraphManager.createRelations(params.arguments?.relations as any).pipe(
-                Effect.map(encode)
-              ),
-            add_observations: (params) =>
-              knowledgeGraphManager.addObservations(params.arguments?.observations as any).pipe(
-                Effect.map(encode)
-              ),
-            delete_entities: (params) =>
-              knowledgeGraphManager.deleteEntities(params.arguments?.entityNames as any).pipe(
-                Effect.map(() => encode("Entities deleted successfully"))
-              ),
-            delete_observations: (params) =>
-              knowledgeGraphManager.deleteObservations(params.arguments?.deletions as any).pipe(
-                Effect.map(() => encode("Observations deleted successfully"))
-              ),
-            delete_relations: (params) =>
-              knowledgeGraphManager.deleteRelations(params.arguments?.relations as any).pipe(
-                Effect.map(() => encode("Relations deleted successfully"))
-              ),
-            read_graph: () =>
-              knowledgeGraphManager.readGraph.pipe(
-                Effect.map(encode)
-              ),
-            search_nodes: (params) =>
-              knowledgeGraphManager.searchNodes(params.arguments?.query as any).pipe(
-                Effect.map(encode)
-              ),
-            open_nodes: (params) =>
-              knowledgeGraphManager.openNodes(params.arguments?.names as any).pipe(
-                Effect.map(encode)
-              )
+          return yield* Match.value(request.params).pipe(
+            Match.discriminatorsExhaustive("name")({
+              create_entities: (params) => manager.createEntities(params.arguments?.entities as any),
+              create_relations: (params) => manager.createRelations(params.arguments?.relations as any),
+              add_observations: (params) => manager.addObservations(params.arguments?.observations as any),
+              read_graph: () => manager.readGraph,
+              search_nodes: (params) => manager.searchNodes(params.arguments?.query as any),
+              open_nodes: (params) => manager.openNodes(params.arguments?.names as any),
+              delete_entities: (params) =>
+                manager.deleteEntities(params.arguments?.entityNames as any).pipe(
+                  Effect.map(() => "Entities deleted successfully")
+                ),
+              delete_observations: (params) =>
+                manager.deleteObservations(params.arguments?.deletions as any).pipe(
+                  Effect.map(() => "Observations deleted successfully")
+                ),
+              delete_relations: (params) =>
+                manager.deleteRelations(params.arguments?.relations as any).pipe(
+                  Effect.map(() => "Relations deleted successfully")
+                )
+            })
+          )
+        }),
+        Effect.map(
+          Match.type<unknown>().pipe(
+            Match.when(Match.string, (text) =>
+              TextContent.make({
+                type: "text",
+                text
+              })),
+            Match.orElse((obj) =>
+              TextContent.make({
+                type: "text",
+                text: JSON.stringify(obj, null, 2)
+              })
+            )
+          )
+        ),
+        Effect.map((content) =>
+          RpcSuccess.make({
+            content: [content]
           })
-        ).pipe(
-          Effect.withSpan("CallToolRequest", {
-            attributes: {
-              tool: request.params.name,
-              arguments: request.params.arguments
+        ),
+        Effect.withSpan("CallToolRequest", {
+          attributes: {
+            tool: request.params.name,
+            arguments: request.params.arguments
+          }
+        }),
+        Effect.catchAllCause((cause) =>
+          Effect.gen(function*() {
+            if (Cause.isInterruptedOnly(cause)) {
+              return "Tool execution interrupted"
             }
-          })
-        )
-      })))
+            if (Cause.isFailType(cause)) {
+              yield* Effect.logError(cause)
+              return cause.error.message
+            }
+            yield* Effect.logError(cause)
+            return Cause.pretty(cause)
+          }).pipe(
+            Effect.map((text) =>
+              ToolError.make({
+                content: [{ type: "text", text }],
+                isError: true
+              })
+            )
+          )
+        ),
+        (effect) => runPromise(effect, { signal })
+      ))
+
+    // const run = Effect.acquireUseRelease(
+    //   Effect.sync(() => new StdioServerTransport()),
+    //   (transport) =>
+    //     Effect.tryPromise({
+    //       try: () => server.connect(transport),
+    //       catch: (cause) =>
+    //         new ServerError({
+    //           code: 500,
+    //           message: Inspectable.format(cause)
+    //         })
+    //     }),
+    //   () => Effect.promise(() => server.close())
+    // )
 
     const run = Effect.gen(function*() {
       const transport = new StdioServerTransport()
 
-      yield* Effect.promise(() => server.connect(transport))
+      yield* Effect.tryPromise({
+        try: () => server.connect(transport),
+        catch: (cause) =>
+          new ServerError({
+            code: 500,
+            message: Inspectable.format(cause)
+          })
+      })
       console.error("Knowledge Graph MCP Server running on stdio")
     })
 
