@@ -528,15 +528,15 @@ export class MemoryServer extends Effect.Service<MemoryServer>()("MemoryServer",
               ),
             delete_entities: (params) =>
               knowledgeGraphManager.deleteEntities(params.arguments?.entityNames as any).pipe(
-                Effect.map(() => encode("Entities deleted successfully")
+                Effect.map(() => encode("Entities deleted successfully"))
               ),
             delete_observations: (params) =>
               knowledgeGraphManager.deleteObservations(params.arguments?.deletions as any).pipe(
-                Effect.map(() => encode("Observations deleted successfully))
+                Effect.map(() => encode("Observations deleted successfully"))
               ),
             delete_relations: (params) =>
               knowledgeGraphManager.deleteRelations(params.arguments?.relations as any).pipe(
-                Effect.map(() => encode("Relations deleted successfully))
+                Effect.map(() => encode("Relations deleted successfully"))
               ),
             read_graph: () =>
               knowledgeGraphManager.readGraph.pipe(
