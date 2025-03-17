@@ -5,7 +5,7 @@ import { DevTools } from "@effect/experimental"
 import { FileSystem } from "@effect/platform"
 import * as NodeContext from "@effect/platform-node/NodeContext"
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime"
-import { Inspectable } from "effect"
+import { DateTime, Inspectable } from "effect"
 import * as Effect from "effect/Effect"
 import { run } from "./Cli.js"
 
@@ -17,6 +17,7 @@ run(process.argv).pipe(
         FS.writeFileString(
           "/home/jpowers/error.log",
           Inspectable.format({
+            timestamp: DateTime.unsafeNow(),
             cause,
             path: process.env.MEMORY_FILE_PATH
           }),
