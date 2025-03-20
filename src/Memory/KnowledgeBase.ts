@@ -1,131 +1,134 @@
-import { Option, Schema, SchemaAST } from "effect"
+import { Effect, Option } from "effect"
+import type { Component, Decision, Knowledge, Project, Relation, Requirement, Task } from "./Domain/KnowledgeBase.js"
+import { Memory } from "./Memory.js"
 
-// Base node properties that all nodes will have
-export const BaseNodeSchema = Schema.Struct({
-  id: Schema.String,
-  createdAt: Schema.Number,
-  updatedAt: Schema.Number,
-  createdBy: Schema.String
-})
+export class KnowledgeBase extends Effect.Service<KnowledgeBase>()("KnowledgeBase", {
+  scoped: Effect.gen(function*(_) {
+    const memory = yield* Memory
 
-// Project level information
-export const ProjectSchema = Schema.TaggedStruct("Project", {
-  ...BaseNodeSchema.fields,
-  name: Schema.String,
-  description: Schema.String,
-  status: Schema.Literal("planning", "in-progress", "completed", "on-hold"),
-  goals: Schema.Array(Schema.String),
-  tags: Schema.Array(Schema.String)
-})
+    // Project operations
+    const createProject = Effect.fn("createProject")(
+      (project: Project) => memory.createNode(project)
+    )
 
-// Requirements and specifications
-export const RequirementSchema = Schema.TaggedStruct("Requirement", {
-  ...BaseNodeSchema.fields,
-  title: Schema.String,
-  description: Schema.String,
-  priority: Schema.Literal("high", "medium", "low"),
-  status: Schema.Literal("proposed", "accepted", "rejected", "implemented"),
-  rationale: Schema.String
-})
+    const findProject = Effect.fn("findProject")(
+      (id: string) =>
+        memory.findNode(id).pipe(
+          Effect.map((result) =>
+            result.records.length > 0
+              ? Option.some(result.records[0].get("n").properties as Project)
+              : Option.none()
+          )
+        )
+    )
 
-// Technical decisions and their context
-export const DecisionSchema = Schema.TaggedStruct("Decision", {
-  ...BaseNodeSchema.fields,
-  title: Schema.String,
-  description: Schema.String,
-  status: Schema.Literal("proposed", "accepted", "rejected", "superseded"),
-  context: Schema.String,
-  consequences: Schema.Array(Schema.String),
-  alternatives: Schema.Array(Schema.String),
-  rationale: Schema.String
-})
+    // Requirement operations
+    const createRequirement = Effect.fn("createRequirement")(
+      (requirement: Requirement) => memory.createNode(requirement)
+    )
 
-// Components and technical artifacts
-export const ComponentSchema = Schema.TaggedStruct("Component", {
-  ...BaseNodeSchema.fields,
-  name: Schema.String,
-  type: Schema.Literal("service", "library", "database", "ui", "api", "tool"),
-  description: Schema.String,
-  status: Schema.Literal("planned", "in-development", "active", "deprecated"),
-  responsibilities: Schema.Array(Schema.String),
-  dependencies: Schema.Array(Schema.String)
-})
+    const findRequirement = Effect.fn("findRequirement")(
+      (id: string) =>
+        memory.findNode(id).pipe(
+          Effect.map((result) =>
+            result.records.length > 0
+              ? Option.some(result.records[0].get("n").properties as Requirement)
+              : Option.none()
+          )
+        )
+    )
 
-// Tasks and work items
-export const TaskSchema = Schema.TaggedStruct("Task", {
-  ...BaseNodeSchema.fields,
-  title: Schema.String,
-  description: Schema.String,
-  status: Schema.Literal("todo", "in-progress", "blocked", "completed"),
-  priority: Schema.Literal("high", "medium", "low"),
-  assignee: Schema.optional(Schema.String),
-  estimatedEffort: Schema.optional(Schema.String),
-  dependencies: Schema.Array(Schema.String)
-})
+    // Decision operations
+    const createDecision = Effect.fn("createDecision")(
+      (decision: Decision) => memory.createNode(decision)
+    )
 
-// Knowledge and documentation
-export const KnowledgeSchema = Schema.TaggedStruct("Knowledge", {
-  ...BaseNodeSchema.fields,
-  title: Schema.String,
-  content: Schema.String,
-  type: Schema.Literal("documentation", "guide", "reference", "learning", "insight"),
-  tags: Schema.Array(Schema.String),
-  relevantComponents: Schema.Array(Schema.String)
-})
+    const findDecision = Effect.fn("findDecision")(
+      (id: string) =>
+        memory.findNode(id).pipe(
+          Effect.map((result) =>
+            result.records.length > 0
+              ? Option.some(result.records[0].get("n").properties as Decision)
+              : Option.none()
+          )
+        )
+    )
 
-export const Node = Schema.Union(
-  ProjectSchema,
-  RequirementSchema,
-  DecisionSchema,
-  ComponentSchema,
-  TaskSchema,
-  KnowledgeSchema
-)
+    // Knowledge operations
+    const createKnowledge = Effect.fn("createKnowledge")(
+      (knowledge: Knowledge) => memory.createNode(knowledge)
+    )
 
-export type NodeSchema = typeof Node
-export type Node = Schema.Schema.Type<typeof Node>
+    const findKnowledge = Effect.fn("findKnowledge")(
+      (id: string) =>
+        memory.findNode(id).pipe(
+          Effect.map((result) =>
+            result.records.length > 0
+              ? Option.some(result.records[0].get("n").properties as Knowledge)
+              : Option.none()
+          )
+        )
+    )
 
-// Relationship types between nodes
-export const RelationshipTypes = {
-  // Project structure relationships
-  CONTAINS: "CONTAINS", // Project contains components
-  IMPLEMENTS: "IMPLEMENTS", // Component implements requirement
-  DEPENDS_ON: "DEPENDS_ON", // Component depends on another component
+    // Task operations
+    const createTask = Effect.fn("createTask")(
+      (task: Task) => memory.createNode(task)
+    )
 
-  // Knowledge relationships
-  DOCUMENTS: "DOCUMENTS", // Knowledge documents a component
-  RELATES_TO: "RELATES_TO", // Generic relationship between any nodes
-  SUPPORTS: "SUPPORTS", // Decision supports requirement
-  BLOCKS: "BLOCKS", // Task blocks another task
+    const findTask = Effect.fn("findTask")(
+      (id: string) =>
+        memory.findNode(id).pipe(
+          Effect.map((result) =>
+            result.records.length > 0
+              ? Option.some(result.records[0].get("n").properties as Task)
+              : Option.none()
+          )
+        )
+    )
 
-  // Decision relationships
-  AFFECTS: "AFFECTS", // Decision affects component
-  SUPERSEDES: "SUPERSEDES", // Decision supersedes another decision
+    // Component operations
+    const createComponent = Effect.fn("createComponent")(
+      (component: Component) => memory.createNode(component)
+    )
 
-  // Task relationships
-  IMPLEMENTS_REQ: "IMPLEMENTS_REQ", // Task implements requirement
-  PART_OF: "PART_OF", // Task is part of component
+    const findComponent = Effect.fn("findComponent")(
+      (id: string) =>
+        memory.findNode(id).pipe(
+          Effect.map((result) =>
+            result.records.length > 0
+              ? Option.some(result.records[0].get("n").properties as Component)
+              : Option.none()
+          )
+        )
+    )
 
-  // Temporal relationships
-  PRECEDES: "PRECEDES", // Something comes before another thing
-  FOLLOWS: "FOLLOWS" // Something comes after another thing
-} as const
+    // Relationship operations
+    const createRelation = Effect.fn("createRelation")(
+      (relation: Relation) => memory.createRelationship(relation)
+    )
 
-// Relationship schema
-export const RelationshipSchema = Schema.Struct({
-  ...BaseNodeSchema.fields,
-  type: Schema.Literal(...Object.values(RelationshipTypes)),
-  fromId: Schema.String,
-  toId: Schema.String,
-  properties: Schema.Record({ key: Schema.String, value: Schema.Unknown })
-})
+    const findRelations = Effect.fn("findRelations")(
+      (nodeId: string, direction: "incoming" | "outgoing" | "both" = "both") =>
+        memory.findRelationships(nodeId, direction).pipe(
+          Effect.map((result) => result.records.map((r) => r.get("r").properties as Relation))
+        )
+    )
 
-export const getIdentifier = (node: NodeSchema) =>
-  SchemaAST.getIdentifierAnnotation(
-    node.ast._tag === "Transformation" ?
-      {
-        ...node.ast.to,
-        ...node.ast
-      } :
-      node.ast
-  ).pipe(Option.getOrElse(() => ""))
+    return {
+      createProject,
+      findProject,
+      createRequirement,
+      findRequirement,
+      createDecision,
+      findDecision,
+      createKnowledge,
+      findKnowledge,
+      createTask,
+      findTask,
+      createComponent,
+      findComponent,
+      createRelation,
+      findRelations
+    } as const
+  })
+}) {}
