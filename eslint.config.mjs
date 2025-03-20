@@ -1,3 +1,4 @@
+import effect from "@effect/eslint-plugin"
 import { fixupPluginRules } from "@eslint/compat"
 import { FlatCompat } from "@eslint/eslintrc"
 import js from "@eslint/js"
@@ -24,14 +25,14 @@ export default [
   ...compat.extends(
     "eslint:recommended",
     "plugin:@typescript-eslint/eslint-recommended",
-    "plugin:@typescript-eslint/recommended",
-    "plugin:@effect/recommended"
+    "plugin:@typescript-eslint/recommended"
   ),
   {
     plugins: {
       import: fixupPluginRules(_import),
       "sort-destructure-keys": sortDestructureKeys,
       "simple-import-sort": simpleImportSort,
+      "@effect": effect,
       codegen
     },
 
