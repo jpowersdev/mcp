@@ -1,11 +1,7 @@
 import { Effect, Schema } from "effect"
 import type { Node, Relation } from "./Domain/KnowledgeBase.js"
+import { MemoryError, NodeFromResult, RelationFromResult, Result } from "./Domain/Memory.js"
 import { Neo4jDriver } from "./Neo4jGraph.js"
-
-export class MemoryError extends Schema.TaggedError<MemoryError>()("MemoryError", {
-  message: Schema.String,
-  cause: Schema.optional(Schema.Unknown)
-}) {}
 
 export class Memory extends Effect.Service<Memory>()("Memory", {
   scoped: Effect.gen(function*(_) {
@@ -14,6 +10,10 @@ export class Memory extends Effect.Service<Memory>()("Memory", {
     const session = driver.session({
       database: "neo4j"
     })
+
+    const decodeNode = Schema.decodeUnknown(NodeFromResult)
+    const decodeRelation = Schema.decodeUnknown(RelationFromResult)
+    const decodeResult = Schema.decodeUnknown(Result(Schema.Any))
 
     // Node operations
     const createNode = Effect.fn("createNode")(
@@ -34,7 +34,7 @@ export class Memory extends Effect.Service<Memory>()("Memory", {
               )
             ),
           catch: (cause) => new MemoryError({ message: `Failed to create node`, cause })
-        })
+        }).pipe(Effect.flatMap(decodeNode))
     )
 
     const findNode = Effect.fn("findNode")(
@@ -48,7 +48,7 @@ export class Memory extends Effect.Service<Memory>()("Memory", {
               )
             ),
           catch: (cause) => new MemoryError({ message: `Failed to find node`, cause })
-        })
+        }).pipe(Effect.flatMap(decodeNode))
     )
 
     // Relationship operations
@@ -77,7 +77,7 @@ export class Memory extends Effect.Service<Memory>()("Memory", {
               )
             ),
           catch: (cause) => new MemoryError({ message: `Failed to create relationship`, cause })
-        })
+        }).pipe(Effect.flatMap(decodeRelation))
     )
 
     const findRelationships = Effect.fn("findRelationships")(
@@ -93,17 +93,17 @@ export class Memory extends Effect.Service<Memory>()("Memory", {
             return session.executeRead((tx) => tx.run(query, { nodeId }))
           },
           catch: (cause) => new MemoryError({ message: `Failed to find relationships`, cause })
-        })
+        }).pipe(Effect.flatMap(decodeRelation))
     )
 
     // Graph queries
     const query = Effect.fn("query")(
-      <T>(cypher: string, params?: Record<string, unknown>) =>
+      (cypher: string, params?: Record<string, unknown>) =>
         Effect.tryPromise({
           try: () => session.executeRead((tx) => tx.run(cypher, params)),
           catch: (cause) => new MemoryError({ message: `Query failed`, cause })
         }).pipe(
-          Effect.map((result) => result as unknown as T)
+          Effect.flatMap(decodeResult)
         )
     )
 
