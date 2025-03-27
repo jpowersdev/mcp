@@ -1,4 +1,5 @@
 import * as Command from "@effect/cli/Command"
+import pkg from "../package.json" with { type: "json" }
 import { FetchServer } from "./FetchServer.js"
 import { MemoryServer } from "./MemoryServer.js"
 
@@ -15,5 +16,5 @@ const command = Command.make("mcp").pipe(
 
 export const run = Command.run(command, {
   name: "MCP",
-  version: "1.0.0"
+  version: pkg.version
 })
